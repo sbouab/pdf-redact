@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+redact-env/
+
+# Offline install files
+wheelhouse/
+
+# Documents and output: nothing from real work may ever be committed
+*.pdf
+*.txt
+_redaction/
+samples/files/
+REVIEW - contains sensitive data - do not share/
+REDACTED - check before sharing/
+FAILED - do not share/
+*.log
+redaction-log.txt
+redaction-report.txt
+
+# Local tooling
+.claude/
+.claude-flow/
+.swarm/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# real per-client terms files are sensitive
+terms.txt

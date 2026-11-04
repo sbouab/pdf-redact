@@ -1,0 +1,2 @@
+# Same line endings (LF) on every OS, in the repo and in the working copy
+* text=auto eol=lf
