@@ -2,13 +2,9 @@
 __pycache__/
 *.py[cod]
 .venv/
-venv/
-redact-env/
-
-# Offline install files
-wheelhouse/
 
 # Documents and output: nothing from real work may ever be committed
+# (*.txt also covers the lists of items to redact, e.g. list.txt, terms.txt)
 *.pdf
 *.txt
 _redaction/
@@ -17,8 +13,6 @@ REVIEW - contains sensitive data - do not share/
 REDACTED - check before sharing/
 FAILED - do not share/
 *.log
-redaction-log.txt
-redaction-report.txt
 
 # Local tooling
 .claude/
@@ -28,6 +22,3 @@ redaction-report.txt
 .idea/
 .DS_Store
 Thumbs.db
-
-# real per-client terms files are sensitive
-terms.txt

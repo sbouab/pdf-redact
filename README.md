@@ -18,24 +18,24 @@ files are never modified.
 
 ## Install (once)
 
-1. Install Python 3.9 or newer from [python.org](https://www.python.org/downloads/).
-   On Windows, tick **Add python.exe to PATH** in the installer.
-2. Open a terminal in this folder and run:
+1. Install [uv](https://docs.astral.sh/uv/), then close and reopen the terminal.
 
    **Windows** (PowerShell)
    ```
-   py -m venv .venv
-   .venv\Scripts\activate
-   pip install -r requirements.txt
+   winget install --id=astral-sh.uv -e
    ```
    **macOS** (Terminal)
    ```
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
+   curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
-   In every new terminal, run the `activate` line again before using the tool. If PowerShell refuses
-   to run `activate`, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
+2. In a terminal opened in this folder, run:
+   ```
+   uv sync
+   ```
+
+This creates a private `.venv` folder here with Python and PyMuPDF at the versions pinned in `uv.lock`.
+Nothing is installed on your system, and there is nothing to activate: uv downloads Python if the
+computer has none. Every command below starts with `uv run` and must be run from this folder.
 
 ## Use
 
@@ -59,7 +59,7 @@ genevieve.cote@example.com
 
 **2. Mark.**
 ```
-python redact.py mark "document.pdf" --list "list.txt"
+uv run redact.py mark "document.pdf" --list "list.txt"
 ```
 It prints how often each item was found, and which were **NOT FOUND**. An item not found is either
 misspelled in the list or sits where its text can't be read (a scan, a picture): box it by hand.
@@ -73,7 +73,7 @@ misspelled in the list or sits where its text can't be read (a scan, a picture):
 
 **4. Apply**, with the same list:
 ```
-python redact.py apply "document.pdf" --list "list.txt"
+uv run redact.py apply "document.pdf" --list "list.txt"
 ```
 This writes `document - REDACTED.pdf` and prints **PASS** or **FAIL**. Instead of the original, you can
 also pass the review copy. Both commands also accept a folder: every PDF inside it, subfolders included.
@@ -102,6 +102,12 @@ The tool needs no network. It blocks any network connection its code attempts, a
 run shows none. With `--require-offline` (or the environment variable `REDACT_REQUIRE_OFFLINE=1`) it
 refuses to start if the computer can reach the internet: turn off Wi-Fi or unplug the cable first.
 
+Only `uv sync` needs the network (to download PyMuPDF). Run it first, then go offline:
+
+```
+uv run redact.py mark "document.pdf" --list "list.txt" --require-offline
+```
+
 ## Limits
 
 * It finds only what is on your list, written as it appears in the document. The review is the safety net.
@@ -116,21 +122,25 @@ refuses to start if the computer can reach the internet: turn off Wi-Fi or unplu
 ## Try it with fake documents
 
 ```
-python samples/make_samples.py
-python redact.py mark samples/files --list samples/files/list.txt
-python redact.py apply samples/files --list samples/files/list.txt
-python samples/check_samples.py
+uv run samples/make_samples.py
+uv run redact.py mark samples/files --list samples/files/list.txt
+uv run redact.py apply samples/files --list samples/files/list.txt
+uv run samples/check_samples.py
 ```
 
 ## For developers
 
+`uv sync` also installs pytest:
+
 ```
-pip install pytest
-python -m pytest
+uv run pytest
 ```
+
+Dependencies are declared in `pyproject.toml`. After changing them, run `uv lock` and commit `uv.lock`.
 
 | File | Role |
 |---|---|
+| `pyproject.toml`, `uv.lock` | dependencies and their pinned versions |
 | `redact.py` | entry point |
 | `pdfredact/cli.py` | commands, file names, messages |
 | `pdfredact/text.py` | the list and how items are matched; page text with character positions |

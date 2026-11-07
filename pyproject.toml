@@ -1,0 +1,14 @@
+[project]
+name = "pdf-redact"
+version = "0.1.0"
+description = "Redact PDFs using your own list of things to remove, with a review step"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pymupdf>=1.26.7,<1.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
