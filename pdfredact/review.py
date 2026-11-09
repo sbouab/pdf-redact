@@ -31,25 +31,44 @@ class Match:
     field: str = ""      # and its name
 
 
+@dataclass
+class PageScan:
+    """What searching a page needs, read once: its text with the position of every character, its pictures,
+    and its text form fields as (object number, name, rectangle, normalized value)."""
+    text: PageText
+    images: list
+    fields: list
+
+
+def scan_page(page):
+    return PageScan(PageText(page), [pymupdf.Rect(i["bbox"]) for i in page.get_image_info()],
+                    [(w.xref, w.field_name or "", pymupdf.Rect(w.rect), normalize(widget_value(w)))
+                     for w in text_fields(page)])
+
+
+def page_matches(pno, scan, terms):
+    """Every occurrence of the list items on one scanned page: in its text, then in its form fields."""
+    out = []
+    for ti, term in enumerate(terms):
+        for start, end in term.find(scan.text.norm):
+            rects = scan.text.rects(start, end)
+            if rects:
+                on_image = any(r.intersects(im) for r in rects for im in scan.images)
+                out.append(Match(pno, ti, rects, "image" if on_image else ""))
+    for xref, name, rect, value in scan.fields:
+        out += [Match(pno, ti, [pymupdf.Rect(rect)], "field", xref, name) for ti, t in enumerate(terms) if t.find(value)]
+    return out
+
+
 def find_matches(doc, terms, problems=None):
     """Every occurrence of every list item, on the pages and in form fields. If `problems` is a list,
     reasons why items could go unfound on a page are added to it."""
     out = []
     for pno, page in enumerate(doc):
-        pt = PageText(page)
-        images = [pymupdf.Rect(i["bbox"]) for i in page.get_image_info()]
+        scan = scan_page(page)
         if problems is not None:
-            problems += [f"page {pno + 1} {p}" for p in page_problems(page, pt, images)]
-        for ti, term in enumerate(terms):
-            for start, end in term.find(pt.norm):
-                rects = pt.rects(start, end)
-                if rects:
-                    on_image = any(r.intersects(im) for r in rects for im in images)
-                    out.append(Match(pno, ti, rects, "image" if on_image else ""))
-        for w in text_fields(page):
-            value = normalize(widget_value(w))
-            out += [Match(pno, ti, [pymupdf.Rect(w.rect)], "field", w.xref, w.field_name or "")
-                    for ti, t in enumerate(terms) if t.find(value)]
+            problems += [f"page {pno + 1} {p}" for p in page_problems(page, scan.text, scan.images)]
+        out += page_matches(pno, scan, terms)
     return out
 
 
@@ -103,7 +122,7 @@ def mark(src, terms, out_path, source_hash, password=None):
                 _add_box(doc[pno], rect, kind, f"on your list: {terms[ti].text}")
         notes = report.problems + report.warnings
         if notes:
-            note = doc[0].add_text_annot((8, 8), "redact_pdf:\n- " + "\n- ".join(notes))
+            note = doc[0].add_text_annot((8, 8), "redact_pdf:\n- " + "\n- ".join(map(str, notes)))
             note.set_info(title=TAG)
             note.update()
         set_review_metadata(doc, made_from)

@@ -2,6 +2,7 @@
 import socket
 
 BLOCKED = []   # what something tried to reach (reported at the end of a run)
+_route = False  # the route found by block_network, once it has run (None: no route)
 
 
 def internet_route():
@@ -19,8 +20,13 @@ def internet_route():
 
 
 def block_network():
-    """Make every network connection attempted from Python in this process fail, and record it.
-    Local inter-process sockets (AF_UNIX) keep working. Call internet_route() first if needed."""
+    """Make every network connection attempted from Python in this process fail, and record it. Local
+    inter-process sockets (AF_UNIX) keep working. Returns internet_route(), asked just before. The first call
+    does it all: later ones only return the same route."""
+    global _route
+    if _route is not False:
+        return _route
+    _route = internet_route()
     real_connect, real_connect_ex = socket.socket.connect, socket.socket.connect_ex
     local = getattr(socket, "AF_UNIX", None)
 
@@ -44,3 +50,4 @@ def block_network():
         raise OSError("network access is blocked by redact_pdf")
 
     socket.socket.connect, socket.socket.connect_ex, socket.getaddrinfo = connect, connect_ex, getaddrinfo
+    return _route

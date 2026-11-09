@@ -178,8 +178,4 @@ def page_problems(page, pt, images):
     elif n >= 20 and any(abs(im & full) >= 0.02 * area for im in images):
         out.append("has pictures: anything written inside a picture (an ID card, a signature, a stamp) "
                    "can't be found, so check them by eye")
-    shown = len(page.get_text("text").split())
-    everywhere = len(page.get_text("text", flags=0, clip=pymupdf.INFINITE_RECT()).split())
-    if everywhere > shown:
-        out.append("has hidden text outside the visible page, which can't be boxed")
-    return out
+    return out              # (text outside the visible page needs nothing: it is removed when redacting)

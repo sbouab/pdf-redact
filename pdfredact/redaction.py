@@ -1,21 +1,20 @@
-"""apply: redact the boxed areas in a fresh copy of the original, clean the text kept outside the pages,
-save the result and check it."""
+"""apply: redact the boxed areas in a fresh copy of the original, remove everything hidden (sanitize.py), save
+the result and check it."""
 import os
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
 import pymupdf
 
 from . import UserError
-from .document import (META_KEYS, XFA_HELP, has_xfa, is_dynamic_xfa, open_pdf, outline_xrefs, pdf_string,
-                       read_stamp, text_fields, widget_value)
+from .document import XFA_HELP, has_xfa, is_dynamic_xfa, open_pdf, read_stamp, text_fields, widget_value
 from .geometry import center_in, near, union
 from .review import MARGIN, boxes_from, find_matches, read_boxes
+from .sanitize import hidden_chars, strip_document, strip_page
 from .text import Term, PageText, list_fingerprint, normalize
 from .verify import check
 
-PLACEHOLDER = "XXXXX"      # replaces removed text in form fields, document properties, bookmarks and comments
+PLACEHOLDER = "XXXXX"      # replaces removed text in form fields and in the text boxes of comments
 
 
 @dataclass
@@ -44,18 +43,42 @@ class Result:
     warns: list = field(default_factory=list)
 
 
-def apply(src, review_path, terms, source_hash, out_path, password=None, drop_attachments=False):
+def apply(src, review_path, terms, source_hash, out_path, password=None, drop_attachments=False, progress=None):
     """Redact `src` as boxed in `review_path`, save to `out_path`, and check the saved file."""
     doc = open_pdf(src, password)
-    rev = None
     try:
         if is_dynamic_xfa(doc):
             raise UserError(XFA_HELP)
-        rev = open_pdf(review_path, password)
+        boxes, made_from = _reviewed_boxes(doc, review_path, terms, source_hash, password)
+        matches = find_matches(doc, terms)
+        if matches and not any(boxes.values()):
+            raise UserError("the review copy has no boxes left. If your PDF viewer removed or flattened them when "
+                            "saving, run mark again with --overwrite and save your edits with another viewer. "
+                            "If you deleted every box on purpose, there is nothing to redact.")
+        kept = sum(1 for page_boxes in boxes.values() for _, kind in page_boxes if kind != "user")
+        added = sum(len(page_boxes) for page_boxes in boxes.values()) - kept
+        deleted = max(0, sum(map(len, boxes_from(matches).values())) - kept)
+        # a viewer rewrote the review copy: no leftover can be taken for a deliberate choice
+        offered = matches if made_from is not None else ()
+        result = redact(doc, boxes, terms, out_path, offered, drop_attachments, progress)
+    finally:
+        doc.close()
+    result.added, result.deleted = added, deleted
+    if made_from is None:
+        result.notes.insert(0, "the review copy no longer records how it was made (the viewer that saved it "
+                               "rewrote it), so any list item left visible counts as an error")
+    return result
+
+
+def _reviewed_boxes(doc, review_path, terms, source_hash, password):
+    """The boxes in the review copy, once it is known to come from this original and this list, and the source
+    fingerprint it records (None if the viewer that saved it dropped it)."""
+    rev = open_pdf(review_path, password)
+    try:
         if len(rev) != len(doc) or any(not near(rev[i].rect, doc[i].rect, 0.5) for i in range(len(doc))):
             raise UserError("the review copy doesn't match the original (its pages differ): "
                             "run mark again with --overwrite")
-        # Where mark put boxes is recomputed below, which is only right with the same original and the same list.
+        # Where mark put boxes is recomputed later, which is only right with the same original and the same list.
         made_from, list_used = read_stamp(rev)
         if made_from is not None and made_from != source_hash:
             raise UserError("the original changed after its review copy was made: run mark again with --overwrite")
@@ -63,78 +86,85 @@ def apply(src, review_path, terms, source_hash, out_path, password=None, drop_at
             raise UserError("the list is not the one mark used (an item was added, removed or changed). Use the same "
                             "list, and draw a box by hand over anything new; or run mark again with --overwrite "
                             "(the box edits in the review copy are then lost).")
-        boxes = read_boxes(doc, rev)
-        matches = find_matches(doc, terms)
-        if matches and not any(boxes.values()):
-            raise UserError("the review copy has no boxes left. If your PDF viewer removed or flattened them when "
-                            "saving, run mark again with --overwrite and save your edits with another viewer. "
-                            "If you deleted every box on purpose, there is nothing to redact.")
-
-        result, plan = Result(), Plan()
-        if made_from is None:     # a viewer rewrote the review copy: no leftover can be taken for a deliberate choice
-            result.notes.append("the review copy no longer records how it was made (the viewer that saved it "
-                                "rewrote it), so any list item left visible counts as an error")
-        else:
-            for m in matches:
-                if m.kind == "field":
-                    plan.marked_fields.add((m.page, m.field))
-                else:
-                    plan.marked[m.page] += m.rects
-        kept = sum(1 for page_boxes in boxes.values() for _, kind in page_boxes if kind != "user")
-        result.added = sum(len(page_boxes) for page_boxes in boxes.values()) - kept
-        result.deleted = max(0, sum(map(len, boxes_from(matches).values())) - kept)
-
-        removed = []                          # text taken out of the pages and form fields
-        for pno, page in enumerate(doc):
-            pt = PageText(page)
-            plan.pages.append(pt)
-            plan.before.append(dict(fields=len(list(page.widgets())), links=len(page.get_links()),
-                                    comments=sum(1 for a in page.annots() if a.type[0] != pymupdf.PDF_ANNOT_REDACT)))
-            # the original's own unapplied redaction marks: only the review copy decides what goes
-            for x in [a.xref for a in page.annots(types=[pymupdf.PDF_ANNOT_REDACT])]:
-                page.delete_annot(page.load_annot(x))
-            text_areas, visual, field_xrefs, taken, segments_out = plan_page(page, pt, boxes.get(pno, []))
-            removed += segments_out
-            frects, values = clean_fields(page, field_xrefs, terms)
-            removed += values
-            areas = text_areas + visual
-            nearby = terms + [Term(s) for s in segments_out]
-            for ln in page.get_links():
-                uri = normalize(ln.get("uri") or "")
-                if any(pymupdf.Rect(ln["from"]).intersects(a) for a in areas) or any(t.find(uri) for t in nearby):
-                    page.delete_link(ln)
-                    plan.links_removed += 1
-            for r in text_areas:
-                page.add_redact_annot(r, fill=(0, 0, 0))
-            if text_areas:   # text goes; table lines crossing it stay
-                page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
-                                      text=pymupdf.PDF_REDACT_TEXT_REMOVE)
-            for r in visual:
-                page.add_redact_annot(r, fill=(0, 0, 0))
-            if visual:       # pixels and covered drawings go
-                page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
-                                      graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
-                                      text=pymupdf.PDF_REDACT_TEXT_NONE)
-            plan.taken.append(taken)
-            plan.field_rects.append(frects)
-            plan.areas.append(areas)
-            plan.visual.append(visual)
-            result.fields += len(frects)
-            if areas:
-                result.pages += 1
-                result.areas += len(areas)
-
-        extra = removed_terms(removed, terms)
-        result.notes += clean_hidden(doc, terms + extra, drop_attachments)
-        try:
-            doc.save(out_path, garbage=3, deflate=True, encryption=pymupdf.PDF_ENCRYPT_NONE)
-        except Exception as e:
-            raise UserError(f"can't write in {os.path.dirname(out_path)}: {e}")
+        return read_boxes(doc, rev), made_from
     finally:
-        doc.close()
-        if rev is not None:
-            rev.close()
-    result.fails, result.warns = check(out_path, plan, terms, extra, drop_attachments)
+        rev.close()
+
+
+def redact(doc, boxes, terms, out_path, marked=(), drop_attachments=False, progress=None):
+    """Black out `boxes` ({page: [(rect, kind)]}, kinds as read_boxes gives them) in `doc`, an original opened for
+    this (it is changed; the caller closes it), clean the text kept outside the pages, save to `out_path` and check
+    the saved file. `marked` are the list matches the reviewer may have chosen to leave visible (apply passes every
+    match it offered as a box in the review copy; the app, the spots kept visible): a list item still visible on
+    one of them is a warning, anywhere else a failure. `progress(stage, done, total)`, if given, is called after
+    each page is redacted ("redact") and checked ("check")."""
+    result, plan = Result(), Plan()
+    for m in marked:
+        if m.kind == "field":
+            plan.marked_fields.add((m.page, m.field))
+        else:
+            plan.marked[m.page] += m.rects
+    result.notes += strip_document(doc)   # first: what the checks count (comments, links) is then what stays
+    removed = []                          # text taken out of the pages and form fields
+    hidden_pages, outside_pages = [], []
+    for pno, page in enumerate(doc):
+        pt = PageText(page)
+        plan.pages.append(pt)
+        plan.before.append(dict(fields=len(list(page.widgets())), links=len(page.get_links()),
+                                comments=sum(1 for a in page.annots() if a.type[0] != pymupdf.PDF_ANNOT_REDACT)))
+        # the original's own unapplied redaction marks: only the boxes given decide what goes
+        for x in [a.xref for a in page.annots(types=[pymupdf.PDF_ANNOT_REDACT])]:
+            page.delete_annot(page.load_annot(x))
+        text_areas, visual, field_xrefs, taken, segments_out = plan_page(page, pt, boxes.get(pno, []))
+        hidden = hidden_chars(page, pt) - taken      # invisible, or cut off by the page's edges
+        removed += segments_out
+        frects, values = clean_fields(page, field_xrefs, terms)
+        removed += values
+        areas = text_areas + visual
+        nearby = terms + [Term(s) for s in segments_out]
+        for ln in page.get_links():
+            uri = normalize(ln.get("uri") or "")
+            if any(pymupdf.Rect(ln["from"]).intersects(a) for a in areas) or any(t.find(uri) for t in nearby):
+                page.delete_link(ln)
+                plan.links_removed += 1
+        for r in text_areas:
+            page.add_redact_annot(r, fill=(0, 0, 0))
+        if text_areas:   # text goes; table lines crossing it stay
+            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+                                  text=pymupdf.PDF_REDACT_TEXT_REMOVE)
+        for r in visual:
+            page.add_redact_annot(r, fill=(0, 0, 0))
+        if visual:       # pixels and covered drawings go
+            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
+                                  graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+                                  text=pymupdf.PDF_REDACT_TEXT_NONE)
+        if strip_page(page, [trim(pt, g, taken | hidden) for g in by_line(pt, sorted(hidden))]):
+            outside_pages.append(pno + 1)
+        if hidden:
+            hidden_pages.append(pno + 1)
+        plan.taken.append(taken | hidden)
+        plan.field_rects.append(frects)
+        plan.areas.append(areas)
+        plan.visual.append(visual)
+        result.fields += len(frects)
+        if areas:
+            result.pages += 1
+            result.areas += len(areas)
+        if progress:
+            progress("redact", pno + 1, len(doc))
+
+    if hidden_pages:
+        result.notes.append(f"removed the invisible text (such as a scan's text layer) on page(s) "
+                            f"{_pages(hidden_pages)}")
+    if outside_pages:
+        result.notes.append(f"removed what lay outside the visible page on page(s) {_pages(outside_pages)}")
+    extra = removed_terms(removed, terms)
+    result.notes += clean_hidden(doc, terms + extra, drop_attachments)
+    try:
+        doc.save(out_path, garbage=3, deflate=True, encryption=pymupdf.PDF_ENCRYPT_NONE)
+    except Exception as e:
+        raise UserError(f"can't write in {os.path.dirname(out_path)}: {e}")
+    result.fails, result.warns = check(out_path, plan, terms, extra, drop_attachments, progress)
     return result
 
 
@@ -190,8 +220,10 @@ def segments(pt, idx):
 def trim(pt, group, taken):
     """The area covering a group of characters, shrunk so it touches no character that must stay:
     MuPDF removes every character a redaction area overlaps."""
-    u = union([pt.boxes[i] for i in group])
-    u = pymupdf.Rect(u.x0 + 0.3, u.y0, u.x1 - 0.3, u.y1)
+    boxes = [pt.boxes[i] for i in group]
+    u = union(boxes)
+    pad = min(0.3, min(b.width for b in boxes) / 4)      # less for tiny text, or the area would miss its ends
+    u = pymupdf.Rect(u.x0 + pad, u.y0, u.x1 - pad, u.y1)
     if u.x1 <= u.x0:
         c = (u.x0 + u.x1) / 2
         u.x0, u.x1 = c - 0.1, c + 0.1
@@ -264,33 +296,27 @@ def removed_terms(removed, terms):
     return out
 
 
+def _pages(numbers):
+    """'1, 3-5' for pages 1, 3, 4 and 5."""
+    runs = []
+    for n in numbers:
+        if runs and n == runs[-1][1] + 1:
+            runs[-1][1] = n
+        else:
+            runs.append([n, n])
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in runs)
+
+
 def clean_hidden(doc, secrets, drop_attachments):
-    """Replace list items and removed text kept outside the pages: document properties, XMP metadata,
-    bookmarks, comments. Attachments go with drop_attachments; an XFA copy of the form data always goes."""
+    """What strip_document leaves that can still hold a list item or removed text: the text shown in comments
+    (a free text box), which is replaced. Attachments go with drop_attachments; an XFA copy of the form data
+    always goes."""
     notes = []
 
     def scrub(s):
         spans = [sp for t in secrets for sp in t.find(normalize(s))]
         return (replace_spans(s, spans, PLACEHOLDER), True) if spans else (s, False)
 
-    meta = dict(doc.metadata or {})
-    changed = [k for k in META_KEYS if meta.get(k) and scrub(meta[k])[1]]
-    if changed:
-        meta.update({k: scrub(meta[k])[0] for k in changed})
-        doc.set_metadata({k: v for k, v in meta.items() if k not in ("format", "encryption")})
-        notes.append(f"cleaned document properties: {', '.join(changed)}")
-    xmp = doc.get_xml_metadata()
-    if xmp and xmp.strip() and scrub(re.sub(r"<[^>]+>", " ", xmp))[1]:
-        doc.del_xml_metadata()
-        notes.append("removed the XMP metadata (it contained list items)")
-    n = 0
-    for x in outline_xrefs(doc):
-        new, hit = scrub(pdf_string(doc, x, "Title"))
-        if hit:
-            doc.xref_set_key(x, "Title", pymupdf.get_pdf_str(new))
-            n += 1
-    if n:
-        notes.append(f"cleaned {n} bookmark(s)")
     n = 0
     for page in doc:
         for a in list(page.annots()):

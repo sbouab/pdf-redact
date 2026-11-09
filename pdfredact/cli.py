@@ -8,13 +8,10 @@ import pymupdf
 
 from . import UserError, offline
 from .document import file_hash
+from .naming import FAILED, REDACTED, REVIEW, output_path, split_name
 from .redaction import apply
 from .review import mark
 from .text import load_list
-
-REVIEW = " - REVIEW (not redacted)"
-REDACTED = " - REDACTED"
-FAILED = " - FAILED CHECK (do not share)"
 
 DESCRIPTION = """\
 Redact PDFs using your own list of things to remove. The original is never modified.
@@ -30,6 +27,9 @@ Redact PDFs using your own list of things to remove. The original is never modif
 
 The list is a plain text file with one item per line: a name, a number, an address...
 Case, accents and spacing don't matter.
+
+Or do it all in the desktop app (the list is typed in the app and nothing is left behind):
+  python redact.py gui [document.pdf]
 """
 
 
@@ -40,15 +40,17 @@ def main(argv=None):
         except (AttributeError, ValueError):
             pass
     args = _parser().parse_args(argv)
+    if args.command == "gui":
+        from .gui.app import main as run_app      # Qt is only loaded for the app
+        return run_app(args.pdf, args.require_offline)
 
-    route = offline.internet_route()                # asked before the network is blocked; sends nothing
+    route = offline.block_network()                 # already blocked by redact.py, before PyMuPDF was loaded
     if args.require_offline or os.environ.get("REDACT_REQUIRE_OFFLINE") == "1":
         if route:
             print("STOPPED: this computer can reach the internet and offline mode was required, so no file was "
                   "opened. Turn off Wi-Fi or unplug the cable, then run the command again.", file=sys.stderr)
             return 2
         print("network: offline confirmed", file=sys.stderr)
-    offline.block_network()
     if int(pymupdf.VersionBind.split(".")[0]) >= 2:
         print(f"WARNING: PyMuPDF {pymupdf.VersionBind} moves the text next to each redaction. Install the "
               'tested version:  pip install "pymupdf>=1.26.7,<1.27"', file=sys.stderr)
@@ -73,9 +75,13 @@ def main(argv=None):
 def _parser():
     p = argparse.ArgumentParser(prog="redact.py", description=DESCRIPTION,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = p.add_subparsers(dest="command", required=True, metavar="{mark,apply}")
+    sub = p.add_subparsers(dest="command", required=True, metavar="{mark,apply,gui}")
     mk = sub.add_parser("mark", help="make a review copy with a box on every list item")
     ap = sub.add_parser("apply", help="black out the boxed areas in a new file and check it")
+    app = sub.add_parser("gui", help="open the desktop app")
+    app.add_argument("pdf", nargs="?", metavar="PDF", help="a PDF to open")
+    app.add_argument("--require-offline", action="store_true",
+                     help="stop unless this computer is offline (or set REDACT_REQUIRE_OFFLINE=1)")
     for s, what in ((mk, "PDF files or folders"), (ap, "PDF files, their review copies, or folders")):
         s.add_argument("pdfs", nargs="+", metavar="PDF", help=what)
         s.add_argument("--list", required=True, metavar="FILE", help="plain text file with one item to redact per line")
@@ -89,21 +95,6 @@ def _parser():
 
 
 # ----------------------------------------------------------------------------- file names
-def _split(path):
-    """(folder, base name, the tool's suffix or None) of a PDF path."""
-    folder, name = os.path.split(os.path.abspath(path))
-    stem = name[:-4] if name.lower().endswith(".pdf") else name
-    for suffix in (REVIEW, REDACTED, FAILED):
-        if stem.lower().endswith(suffix.lower()):
-            return folder, stem[:-len(suffix)], suffix
-    return folder, stem, None
-
-
-def output_path(original, suffix):
-    folder, stem, _ = _split(original)
-    return os.path.join(folder, stem + suffix + ".pdf")
-
-
 def originals(paths):
     """The original PDFs given on the command line. A folder means every PDF in it, subfolders included;
     a review copy stands for its original; the tool's other output files are skipped."""
@@ -112,11 +103,11 @@ def originals(paths):
         if os.path.isdir(p):
             found = sorted(f for f in glob.glob(os.path.join(glob.escape(p), "**", "*"), recursive=True)
                            if f.lower().endswith(".pdf") and os.path.isfile(f))
-            out += [os.path.abspath(f) for f in found if _split(f)[2] is None]
+            out += [os.path.abspath(f) for f in found if split_name(f)[2] is None]
             continue
         if not os.path.isfile(p):
             raise UserError(f"not found: {p}")
-        folder, stem, suffix = _split(p)
+        folder, stem, suffix = split_name(p)
         if suffix is None:
             out.append(os.path.abspath(p))
         elif suffix == REVIEW:
@@ -183,7 +174,7 @@ def run_mark(args, terms, files):
 def run_apply(args, terms, files):
     status = 0
     for src in files:
-        folder, stem, _ = _split(src)
+        folder, stem, _ = split_name(src)
         name, review = os.path.basename(src), output_path(src, REVIEW)
         work = os.path.join(folder, f".{stem}.redacting.pdf")
         try:

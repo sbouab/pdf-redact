@@ -4,7 +4,8 @@ import re
 
 import pymupdf
 
-from . import TAG, UserError
+from . import TAG, Finding, PasswordError, UserError
+from .sanitize import show_all_layers
 
 TEXT_FIELDS = {pymupdf.PDF_WIDGET_TYPE_TEXT, pymupdf.PDF_WIDGET_TYPE_COMBOBOX, pymupdf.PDF_WIDGET_TYPE_LISTBOX}
 META_KEYS = ("title", "author", "subject", "keywords", "creator", "producer")
@@ -13,15 +14,22 @@ XFA_HELP = ("this is an Adobe XFA form: its filled-in data is not on the pages, 
             "Windows: Microsoft Print to PDF) and use the printed copy instead.")
 
 
-def open_pdf(path, password=None):
+def open_pdf(path, password=None, data=None):
+    """Open a PDF file, or its content already read into memory (`data`: `path` then only names it in messages).
+    Hidden layers are shown (in memory only): what they hold is then seen, searched and redacted like the rest."""
     try:
-        doc = pymupdf.open(path)
+        doc = pymupdf.open(path) if data is None else pymupdf.open(stream=data, filetype="pdf")
     except Exception as e:
         raise UserError(f"can't open {path}: {e}")
-    if not doc.is_pdf:
-        raise UserError(f"{path} is not a PDF")
-    if doc.needs_pass and not (password and doc.authenticate(password)):
-        raise UserError(f"{path} is password-protected: add --password")
+    try:
+        if not doc.is_pdf:
+            raise UserError(f"{path} is not a PDF")
+        if doc.needs_pass and not (password and doc.authenticate(password)):
+            raise PasswordError(f"{path} is password-protected: add --password")
+        show_all_layers(doc)
+    except BaseException:
+        doc.close()                 # whatever went wrong, the caller never gets the document to close it
+        raise
     return doc
 
 
@@ -147,17 +155,16 @@ def hidden_texts(doc):
 
 
 def document_warnings(doc):
+    """What to know about the whole document before redacting it, as findings."""
     w = []
     if has_xfa(doc):
-        w.append("XFA form: apply removes its hidden copy of the form data (the regular form fields stay)")
+        w.append(Finding("xfa-form", "XFA form: apply removes its hidden copy of the form data (the regular form "
+                                     "fields stay)"))
     attached = doc.embfile_count() + sum(1 for p in doc for a in p.annots() if a.type[0] == pymupdf.PDF_ANNOT_FILE_ATTACHMENT)
     if attached:
-        w.append(f"{attached} attached file(s) inside the PDF can't be checked: apply fails unless you add --drop-attachments")
+        w.append(Finding("attached-files", f"{attached} attached file(s) inside the PDF can't be checked: apply fails "
+                                           "unless you add --drop-attachments", count=attached))
     if any(wd.field_type == pymupdf.PDF_WIDGET_TYPE_SIGNATURE for p in doc for wd in p.widgets()):
-        w.append("digitally signed: the signature holds the signer's identity, and redacting invalidates it")
-    try:
-        if doc.get_ocgs():
-            w.append("has layers: text on hidden layers may not be found")
-    except Exception:
-        pass
+        w.append(Finding("signed", "digitally signed: the signature holds the signer's identity, and redacting "
+                                   "invalidates it"))
     return w
