@@ -3,10 +3,17 @@
 
     python redact.py mark  document.pdf --list list.txt
     python redact.py apply document.pdf --list list.txt
+    python redact.py gui   [document.pdf]
 """
 import sys
 
-from pdfredact.cli import main
+from pdfredact import offline
+
+# First of all, before PyMuPDF or Qt is loaded: nothing in this process may use the network. This also runs in
+# the app's helper processes, which import this file again (as __mp_main__) before the job's code.
+offline.block_network()
+
+from pdfredact.cli import main  # noqa: E402  (loads PyMuPDF)
 
 if __name__ == "__main__":
     sys.exit(main())

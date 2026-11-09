@@ -1,6 +1,7 @@
 """End-to-end tests on fake documents: mark, a simulated review, apply, and checks that don't rely on the
 tool's own code. Run from the repository folder:  python -m pytest"""
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -21,8 +22,10 @@ REVIEW, REDACTED, FAILED = " - REVIEW (not redacted).pdf", " - REDACTED.pdf", " 
 
 
 def run(*args):
+    # the tool's output is read as UTF-8, so it must write UTF-8 (on Windows a pipe defaults to the ANSI code page)
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     p = subprocess.run([sys.executable, str(ROOT / "redact.py"), *map(str, args)], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
+                       encoding="utf-8", errors="replace", env=env)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -146,6 +149,7 @@ def test_mark_review_apply(tmp_path):
 
     deliberate = {"letter_fr.pdf": ["Marc-André Bélanger"]}
     gone_too = {"t4_slip.pdf": ["Acme Widgets"], "letter_fr.pdf": ["Avis de cotisation 2025"]}
+    text_layer_gone = {"scan_with_text_layer.pdf"}      # invisible text: the picture alone shows what stays
     for name in files:
         text = everything(tmp_path / (name[:-4] + REDACTED))
         for item in S.LIST:
@@ -157,7 +161,7 @@ def test_mark_review_apply(tmp_path):
             assert squash(item) not in text, (name, item)
         for item in S.SAMPLES[name][1]:
             if item not in gone_too.get(name, []):
-                assert squash(item) in text, (name, item)
+                assert (squash(item) in text) != (name in text_layer_gone), (name, item)
 
     # pictures: the pixels are blacked out, not just covered
     assert dark_share(tmp_path / ("scan_no_text" + REDACTED), name_rect) > 0.9
@@ -211,7 +215,8 @@ def test_unboxed_list_item_fails_the_check(tmp_path):
                       file_hash(files["t4_slip.pdf"]), str(tmp_path / "out.pdf"))
     finally:
         red.find_matches = real
-    assert any("'H2X 1Y4' is on the list but was not boxed" in f for f in r.fails), r.fails
+    assert any(f.code == "not-boxed" and f.text == "H2X 1Y4" and "'H2X 1Y4' is on the list but was not boxed" in str(f)
+               for f in r.fails), r.fails
 
 
 def test_review_copy_that_lost_its_boxes_is_refused(tmp_path):

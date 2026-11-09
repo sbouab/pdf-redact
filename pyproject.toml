@@ -6,9 +6,18 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "pymupdf>=1.26.7,<1.27",
+    "pyside6-essentials>=6.12,<7",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "samples"]
+
+[tool.uv]
+# Regular use never touches the network, uv included: `uv run` uses what is installed. Install with
+# `uv sync --no-offline`; change dependencies with `uv lock --no-offline`.
+offline = true
