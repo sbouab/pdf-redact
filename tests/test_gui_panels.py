@@ -230,6 +230,35 @@ def test_result_panel_pass_and_fail_states(qapp, letter):
     panel.close()
 
 
+def test_a_failed_check_can_be_ignored(qapp, letter):
+    """Every failure has an Ignore button. Save turns on once each failure is ignored (and the result is current);
+    an ignored failure says so, and its button takes the choice back."""
+    panel = ResultPanel()
+    panel.show()
+    toggled = []
+    panel.ignoreToggled.connect(toggled.append)
+    first = Finding("attachments", "cli text", count=1)
+    second = Finding("not-boxed", "cli text", page=2, text="Paul")
+    failed = Result(areas=3, pages=1, fails=[first, second])
+    panel.show_result(failed, letter, True, "letter_fr - REDACTED.pdf")
+    assert not panel.save.isEnabled() and len(buttons(panel, "Ignore")) == 2 and not buttons(panel, "Don't ignore")
+    panel.show_result(failed, letter, True, "letter_fr - REDACTED.pdf", ignored={first})
+    assert not panel.save.isEnabled() and len(buttons(panel, "Don't ignore")) == 1
+    [ignore] = buttons(panel, "Ignore")
+    ignore.click()
+    assert toggled == [second]
+    panel.show_result(failed, letter, True, "letter_fr - REDACTED.pdf", ignored={first, second})
+    assert panel.save.isEnabled() and panel.heading.text() == "Not safe to share"
+    assert len(buttons(panel, "Don't ignore")) == 2 and "2 failed checks ignored" in panel.caption.text()
+    texts = [w.text() for w in panel.findChildren(QLabel) if w.isVisibleTo(panel)]
+    assert any(t.startswith("Ignored. Page 2:") for t in texts)
+    buttons(panel, "Don't ignore")[0].click()
+    assert toggled[-1] in (first, second)
+    panel.show_result(failed, letter, False, "letter_fr - REDACTED.pdf", ignored={first, second})
+    assert not panel.save.isEnabled()                        # a result that isn't current can't be saved
+    panel.close()
+
+
 def test_changing_state_opens_no_stray_window(qapp, letter):
     """Labels moved from one state to the next must never show on their own, as little windows."""
     from PySide6.QtCore import QEvent, QObject

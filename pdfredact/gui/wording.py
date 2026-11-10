@@ -10,8 +10,8 @@ SHORT = 40          # characters of a text quoted in a sentence or a menu; a lon
 # what sanitize.py removes, whatever the list holds
 ALWAYS_REMOVED = ("Every redacted copy also loses what no one sees on its pages: the document's properties and "
                   "metadata, bookmarks, the hidden text of comments, links to outside the document, scripts, "
-                  "the values of hidden form fields, invisible text (such as a scan's text layer, or text too small to read) and anything outside "
-                  "the visible page.")
+                  "the values of hidden form fields, invisible text (such as a scan's text layer, or text too small "
+                  "to read) and anything outside the visible page.")
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,17 @@ def finding_fixes(f):
     if f.page is None:
         return []
     return [Fix("page", "Show" if f.code in _SHOWN else f"Go to page {f.page}", page=f.page)]
+
+
+IGNORED_TITLE = "Save without passing every check?"
+
+
+def ignored_text(fails, shown=5):
+    """What the window says before saving a copy whose failed checks the user chose to ignore."""
+    listed = " ".join(finding_text(f) for f in fails[:shown])
+    more = f" And {len(fails) - shown} more." if len(fails) > shown else ""
+    return (f"This copy failed {plural(len(fails), 'check')} that you chose to ignore. {listed}{more} It may still "
+            "show, or hold, what you wanted to remove. Save it anyway?")
 
 
 def warning_text(f):

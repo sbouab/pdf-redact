@@ -62,7 +62,9 @@ or, to open a PDF right away, `uv run redact.py gui "document.pdf"`.
 4. **Look at the result**: click *Redacted*. The app blacks out a fresh copy of the original and
    runs every check listed under [What gets checked](#what-gets-checked). It starts as soon as you
    pause editing, so the result is usually ready when you switch.
-5. **Save redacted PDF…** writes the file wherever you choose. It stays off until every check passes.
+5. **Save redacted PDF…** writes the file wherever you choose. It stays off until every check passes,
+   or until you click **Ignore** on each check that failed; Save then names what failed and asks you to
+   confirm. Ignoring holds for that copy only: after an edit, the new copy is checked again.
 
 The app keeps nothing. The list is typed in the app and never saved. The redacted copy waits in
 memory until you save it; while it is being made it sits in a private temporary folder that is

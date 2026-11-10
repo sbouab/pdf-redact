@@ -11,7 +11,7 @@ import hashlib
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pymupdf
@@ -34,7 +34,7 @@ from .session import Box, Cancelled, Session
 from .style import set_state
 from .viewer import PageView
 from .widgets import Legend, OpenScreen, SavedBanner
-from .wording import plural, quoted, sentence
+from .wording import IGNORED_TITLE, ignored_text, plural, quoted, sentence
 
 APP_NAME = "PDF Redact"
 BACKGROUND_DELAY_MS = 1200      # quiet time after the last edit before the redacted copy is made in the background
@@ -70,9 +70,14 @@ class _Done:
     data: bytes = b""
     sha256: str = ""
     doc: pymupdf.Document | None = None
+    ignored: set = field(default_factory=set)       # failed checks the user chose to ignore, to save anyway
 
     def passed(self):
         return self.result is not None and not self.result.fails
+
+    def savable(self):
+        """Passed every check, or failed only checks the user chose to ignore."""
+        return self.result is not None and all(f in self.ignored for f in self.result.fails)
 
     def close(self):
         if self.doc is not None:
@@ -261,6 +266,7 @@ class MainWindow(QMainWindow):
         self.result_panel.backRequested.connect(lambda: self.show_view("review"))
         self.result_panel.retryRequested.connect(self._retry)
         self.result_panel.fixRequested.connect(self._apply_fix)
+        self.result_panel.ignoreToggled.connect(self._toggle_ignored)
         self.sidebar = QStackedWidget()
         self.sidebar.addWidget(self.review_panel)
         self.sidebar.addWidget(self.result_panel)
@@ -472,6 +478,16 @@ class MainWindow(QMainWindow):
         elif fix.kind == "page":
             self.viewer.scroll_to(fix.page - 1)
 
+    def _toggle_ignored(self, finding):
+        """Ignore a failed check of the result shown, or take that back. Save turns on once every failure is
+        ignored; the choice holds for this result only (an edit makes a new copy, checked again)."""
+        done = self._done
+        if not self._fresh() or done.result is None or finding not in done.result.fails:
+            return
+        done.ignored ^= {finding}
+        if self.view == "redacted":
+            self._show_done()
+
     def _edited(self):
         """After every edit, undo and redo: redraw, and redact again (soon, or now in the Redacted view)."""
         s = self.session
@@ -590,7 +606,7 @@ class MainWindow(QMainWindow):
             self.result_panel.show_error(done.error)
             self._show_pages(("pending", s.generation), s.doc, ReviewLayer(s, self.current_match, interactive=False))
         else:
-            self.result_panel.show_result(done.result, s, True, os.path.basename(self._suggested_path()))
+            self.result_panel.show_result(done.result, s, True, os.path.basename(self._suggested_path()), done.ignored)
             self._show_pages(("result", done.generation), done.doc, ResultLayer(s))
         self.hint_label.setText(REDACTED_HINT)
 
@@ -684,17 +700,21 @@ class MainWindow(QMainWindow):
     # ================================================================== saving
     def save(self):
         """Save the redacted PDF. It is shown first (the Redacted view, with its warnings); the Save window opens
-        at once when the current result passed, or as soon as it does."""
+        at once when the current result passed (or failed only checks the user ignored), or as soon as it
+        passes."""
         s = self.session
         if s is None or not s.has_work():
             return
         self.show_view("redacted")
         if not self._fresh():
             self._save_when_ready = True
-        elif self._done.passed():
+        elif self._done.savable():
             self._save_dialog()
 
     def _save_dialog(self):
+        ignored = self._done.result.fails         # by now, only failures the user chose to ignore
+        if ignored and not self._ask(IGNORED_TITLE, ignored_text(ignored), "Save Anyway"):
+            return
         path = self._ask_save_path(self._suggested_path())
         if not path:
             return
@@ -715,11 +735,12 @@ class MainWindow(QMainWindow):
 
     def save_to(self, path):
         """Write the checked bytes of the current result to `path` (they were compared with the checked file's
-        SHA-256 when read back). Refused for the original, or when there is no passing result for the current
-        state. Returns True once saved."""
+        SHA-256 when read back). Refused for the original, or when the current state has no result that passed
+        (or failed only checks the user ignored). Returns True once saved."""
         s, done = self.session, self._done
-        if s is None or not self._fresh() or not done.passed():
-            self._tell("Nothing checked to save", "The redacted copy isn't ready yet, or it didn't pass every check.")
+        if s is None or not self._fresh() or not done.savable():
+            self._tell("Nothing checked to save", "The redacted copy isn't ready yet, or a check failed that you "
+                                                  "haven't ignored.")
             return False
         if _same_file(path, s.path):
             self._tell("Choose another name", "This is your original file, which is never changed. Save the "

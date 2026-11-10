@@ -8,9 +8,10 @@ import pymupdf
 import pytest
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QPushButton
 
 import pdfredact.gui.window as window_module
-from helpers import LIST, encrypted, let_events_run, page_text, sample, wait_until
+from helpers import LIST, encrypted, let_events_run, page_text, sample, wait_until, with_attachment
 from pdfredact.gui.window import MainWindow
 from pdfredact.gui.workspace import Workspace
 
@@ -88,6 +89,43 @@ def test_save_refuses_the_original_and_stale_results(app_window, tmp_path):
     w.add_items(["046 454 286"])                                # the result no longer matches the list
     assert not w.result_ready() and not w.save_to(str(tmp_path / "other.pdf"))
     assert not (tmp_path / "other.pdf").exists()
+
+
+def ignore_buttons(w):
+    QApplication.processEvents()          # widgets added to a shown panel are shown by a queued call
+    return [b for b in w.result_panel.findChildren(QPushButton)
+            if b.text() == "Ignore" and b.isVisibleTo(w.result_panel)]
+
+
+def test_failed_checks_can_be_ignored_to_save_anyway(app_window, tmp_path, monkeypatch):
+    """A failed check keeps Save off until the user ignores it. Saving then asks first, naming what failed. The
+    choice holds for that copy only: after an edit, the new copy is checked, and a failure must be ignored again."""
+    w = app_window
+    path = sample(tmp_path, "letter_fr.pdf")
+    with_attachment(path)                                        # attached files can't be checked: a failure
+    assert w.open_path(str(path))
+    w.add_items(["Côté-Tremblay"])
+    w.show_view("redacted")
+    wait_until(w.result_ready)
+    out = tmp_path / "anyway.pdf"
+    monkeypatch.setattr(w, "_ask_save_path", lambda suggested: str(out))
+    assert w.result_panel.heading.text() == "Not safe to share" and not w.result_panel.save.isEnabled()
+    assert not w.save_to(str(out)) and not out.exists()
+    for button in ignore_buttons(w):
+        button.click()
+    assert w.result_panel.save.isEnabled() and not ignore_buttons(w)
+    accept, w._ask = w._ask, lambda title, text, yes: (w.asked.append((title, text)), False)[1]
+    w.save()
+    assert not out.exists()                                      # not confirmed: nothing saved
+    w._ask = accept
+    w.save()
+    assert out.exists() and hashlib.sha256(out.read_bytes()).hexdigest() == w.last_result_sha256()
+    assert [title for title, _ in w.asked] == ["Save without passing every check?"] * 2
+    assert "attached file" in w.asked[-1][1]
+    w.add_items(["046 454 286"])                                 # a new copy, checked again
+    wait_until(w.result_ready)
+    assert not w.result_panel.save.isEnabled() and ignore_buttons(w)
+    assert not w.save_to(str(tmp_path / "again.pdf"))
 
 
 def test_an_edit_cancels_the_running_job_and_starts_again(app_window, tmp_path):

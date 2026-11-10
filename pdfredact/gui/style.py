@@ -78,6 +78,8 @@ QFrame[role="note"][tone="amber"] QLabel { color: #5c3600; }
 QFrame[role="note"][tone="gray"] { background: #f0f0f3; }
 QFrame[role="note"][tone="gray"] QLabel { color: #48484d; }
 QFrame[role="note"][tone="failure"] { background: white; border: 1px solid #f3b6c2; border-radius: 8px; }
+QFrame[role="note"][tone="ignored"] { background: #f0f0f3; border: 1px dashed #c7c7cc; border-radius: 8px; }
+QFrame[role="note"][tone="ignored"] QLabel { color: #6e6e73; }
 QFrame#SavedBanner { background: #e6f4ea; border-radius: 8px; }
 QFrame#SavedBanner QLabel { color: #14532d; }
 QFrame#DropZone { background: white; border: 2px dashed #a1a1a8; border-radius: 14px; }

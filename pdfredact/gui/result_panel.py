@@ -1,5 +1,6 @@
-"""The Redacted sidebar: the job's progress, then the result of the checks (passed, or what failed and the one
-fix each failure needs), the warnings to look at, and Save, which stays off until every check passes."""
+"""The Redacted sidebar: the job's progress, then the result of the checks (passed, or what failed, the one fix
+each failure needs, and a button to ignore it), the warnings to look at, and Save, which stays off until every
+check passes or is ignored."""
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
@@ -7,9 +8,11 @@ from .style import label, set_state
 from .wording import finding_fixes, finding_text, plural, sentence, stage_text, summary
 
 STAGES = ("redact", "check")      # as the job reports them
-SAVE_OFF = "Off until every check passes."
-FAILED_HELP = ("Every failure comes with the one fix it needs, or a page to go look at. When all checks pass, "
-               "Save turns back on.")
+SAVE_OFF = "Off until every check passes or is ignored."
+FAILED_HELP = ("Every failure comes with the one fix it needs, or a page to go look at. Save turns back on when "
+               "all checks pass, or once you ignore the ones that fail.")
+IGNORE, UNIGNORE = "Ignore", "Don't ignore"
+IGNORE_TIP = "Allow saving even though this check failed (Save asks you to confirm)"
 
 
 def _label(text="", role=None):
@@ -23,6 +26,7 @@ class ResultPanel(QWidget):
     backRequested = Signal()
     retryRequested = Signal()
     fixRequested = Signal(object)        # a Fix chosen next to a finding
+    ignoreToggled = Signal(object)       # a failed check (a Finding) to ignore, or to stop ignoring
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -86,18 +90,21 @@ class ResultPanel(QWidget):
         self._content.addWidget(retry, 0, Qt.AlignmentFlag.AlignLeft)
         self._finish(False, SAVE_OFF)
 
-    def show_result(self, result, session, can_save, suggested_name):
-        """The outcome of the checks. Save is on when they passed and `can_save` (the result is current)."""
+    def show_result(self, result, session, can_save, suggested_name, ignored=frozenset()):
+        """The outcome of the checks. Save is on when they passed, or every failure is in `ignored` (the user chose
+        to ignore it), and `can_save` (the result is current)."""
         self._start("result")
         passed = not result.fails
+        skipped = [f for f in result.fails if f in ignored]
         if passed:
             lines = [summary(result) + (" Nothing under a black box can be copied out." if result.areas else "")]
             self._content.addWidget(self._card("pass", "Passed all checks", lines))
         else:
-            lines = [f"{plural(len(result.fails), 'check')} failed. Nothing was saved."]
+            lines = [f"{plural(len(result.fails), 'check')} failed" + (f", {len(skipped)} ignored" if skipped else "")
+                     + ". Nothing was saved."]
             self._content.addWidget(self._card("fail", "Not safe to share", lines))
             for f in result.fails:
-                self._content.addWidget(self._finding(f, "failure"))
+                self._content.addWidget(self._finding(f, "ignored" if f in ignored else "failure", ignorable=True))
         if result.warns:
             self._content.addWidget(_label("Look at before sharing", role="subheading"))
             for f in result.warns:
@@ -109,8 +116,14 @@ class ResultPanel(QWidget):
             made += f" and {plural(len(session.drawn), 'box', 'boxes')} you drew"
         made += ". Change them in Review: this view redoes itself when you come back."
         self._content.addWidget(self._note("gray", [made if passed else FAILED_HELP]))
-        enabled = passed and can_save
-        self._finish(enabled, f"Suggested name: {suggested_name}" if enabled else SAVE_OFF)
+        enabled = can_save and len(skipped) == len(result.fails)
+        if not enabled:
+            caption = SAVE_OFF
+        elif skipped:
+            caption = f"{plural(len(skipped), 'failed check')} ignored. Suggested name: {suggested_name}"
+        else:
+            caption = f"Suggested name: {suggested_name}"
+        self._finish(enabled, caption)
 
     # ------------------------------------------------------------------ parts
     def _start(self, mode):
@@ -160,8 +173,11 @@ class ResultPanel(QWidget):
             column.addWidget(_label(line))
         return note
 
-    def _finding(self, f, tone):
-        note = self._note(tone, [finding_text(f)])
+    def _finding(self, f, tone, ignorable=False):
+        """A finding with its fixes. A failure (`ignorable`) also gets, at the right, the button that ignores it,
+        or takes that back when it is already ignored (tone "ignored")."""
+        ignored = tone == "ignored"
+        note = self._note(tone, [("Ignored. " if ignored else "") + finding_text(f)])
         fixes = QHBoxLayout()
         fixes.setSpacing(14)
         for fix in finding_fixes(f):
@@ -170,5 +186,11 @@ class ResultPanel(QWidget):
             button.clicked.connect(lambda _=False, chosen=fix: self.fixRequested.emit(chosen))
             fixes.addWidget(button)
         fixes.addStretch(1)
+        if ignorable:
+            ignore = QPushButton(UNIGNORE if ignored else IGNORE)
+            ignore.setProperty("role", "link")
+            ignore.setToolTip(IGNORE_TIP)
+            ignore.clicked.connect(lambda _=False, chosen=f: self.ignoreToggled.emit(chosen))
+            fixes.addWidget(ignore)
         note.layout().addLayout(fixes)
         return note
