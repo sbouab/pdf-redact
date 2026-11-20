@@ -13,6 +13,9 @@ dependencies = [
 dev = [
     "pytest",
 ]
+mac-build = [
+    "pyinstaller>=6.16",    # builds the Mac app (packaging/macos/build.sh); 6.16 is the first for Python 3.14
+]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "samples"]

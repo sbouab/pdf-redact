@@ -14,6 +14,10 @@ REDACTED - check before sharing/
 FAILED - do not share/
 *.log
 
+# The Mac app's build (packaging/macos/build.sh)
+build/
+dist/
+
 # Local tooling
 .claude/
 .claude-flow/

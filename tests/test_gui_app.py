@@ -1,12 +1,17 @@
-"""Starting the app: it refuses to run online when offline mode is required. Run:  uv run pytest"""
+"""Starting the app: it refuses to run online when offline mode is required, and opens the PDFs the system hands
+it. Run:  uv run pytest"""
 import sys
 import tempfile
 
 import pytest
+from PySide6.QtCore import QCoreApplication
+from PySide6.QtGui import QFileOpenEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from helpers import sample, wait_until
 from pdfredact import offline
-from pdfredact.gui import app
+from pdfredact.gui import app, window
+from pdfredact.gui.fileopen import FileOpener
 
 
 @pytest.fixture
@@ -45,6 +50,43 @@ def test_an_error_raised_while_its_message_shows_is_only_printed(qapp, monkeypat
     monkeypatch.setattr(QMessageBox, "critical", critical)
     report(RuntimeError, RuntimeError("page can't be drawn"), None)
     assert len(shown) == 1 and capsys.readouterr().err.count("page can't be drawn") == 2
+
+
+class Recorder:
+    def __init__(self):
+        self.paths = []
+
+    def open_path(self, path):
+        self.paths.append(path)
+        return True
+
+
+def test_pdfs_handed_over_by_the_system_are_opened(qapp):
+    """On a Mac, "Open With" and a drop on the Dock icon hand the PDF to the app as an event, not as an argument.
+    One that comes before the window exists (the app was started by it) waits for the window."""
+    opener = FileOpener()
+    qapp.installEventFilter(opener)
+    try:
+        QCoreApplication.sendEvent(qapp, QFileOpenEvent("/Users/me/first.pdf"))
+        recorder = Recorder()
+        opener.set_window(recorder)
+        QCoreApplication.sendEvent(qapp, QFileOpenEvent("/Users/me/second.pdf"))
+        wait_until(lambda: len(recorder.paths) == 2, timeout=5)
+    finally:
+        qapp.removeEventFilter(opener)
+    assert recorder.paths == ["/Users/me/first.pdf", "/Users/me/second.pdf"]
+
+
+def test_the_app_opens_what_the_system_hands_it(qapp, online, monkeypatch, tmp_path):
+    path, opened = str(sample(tmp_path, "letter_fr.pdf")), []
+    monkeypatch.setattr(window.MainWindow, "open_path", lambda self, p: opened.append(p) or True)
+
+    def run(self):
+        QCoreApplication.sendEvent(self, QFileOpenEvent(path))
+        wait_until(lambda: opened, timeout=5)
+        return 0
+    monkeypatch.setattr(QApplication, "exec", run)
+    assert app.main() == 0 and opened == [path]
 
 
 def test_cli_has_the_gui_command():

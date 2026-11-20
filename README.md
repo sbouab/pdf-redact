@@ -72,6 +72,25 @@ deleted when you close the app (or at the next start, after a crash). Opening an
 list, to redact several files about the same person in a row. Your system's Open and Save windows
 may remember recent folders, as they do for every app.
 
+### As a Mac app (Apple Silicon)
+
+To start the app with a double-click, build `PDF Redact.app` once, on the Mac:
+
+```
+uv sync --no-offline --group mac-build      # once: also downloads PyInstaller
+sh packaging/macos/build.sh
+```
+
+This makes `dist/PDF Redact.app` (drag it to Applications) and `dist/PDF Redact-<version>-arm64.dmg`.
+The app holds everything it needs and works offline. It is offered for PDFs, without becoming the
+default PDF app: right-click a PDF > *Open With* > *PDF Redact*, or drop a PDF on its Dock icon. Before
+making the disk image, the build checks the app (`--self-check`): with the network blocked, it redacts
+a made-up PDF through the helper process, as the app does.
+
+Built on your Mac, it opens like any other app. A copy downloaded from elsewhere is blocked by macOS
+until it is signed and notarized with an Apple Developer ID, or allowed in System Settings > Privacy &
+Security.
+
 ## The command line
 
 ```
@@ -250,6 +269,9 @@ Dependencies are declared in `pyproject.toml`. After changing them, run `uv lock
 | `pdfredact/gui/viewer.py`, `layers.py` | the pages, the boxes drawn over them, clicks and drags |
 | `pdfredact/gui/review_panel.py`, `result_panel.py` | the two sidebars |
 | `pdfredact/gui/commands.py`, `wording.py`, `widgets.py`, `style.py` | undo, the app's wording, small parts, the look |
+| `pdfredact/gui/fileopen.py` | PDFs the system hands the app (macOS: *Open With*, a drop on the Dock icon) |
+| `pdfredact/gui/selfcheck.py` | the built Mac app's `--self-check` |
+| `packaging/macos/` | building the Mac app: `build.sh`, the PyInstaller recipe, its starting script, its icon |
 
 PyMuPDF is pinned to 1.26.x: version 2.x shifts the text next to each redaction, and it loads
 Microsoft's onnxruntime, which was seen trying to reach a telemetry server.

@@ -1,4 +1,5 @@
-"""Starting the app: the offline check, the network block, the private folder, Qt, and the window."""
+"""Starting the app: the offline check, the network block, the private folder, Qt, the window, and the PDFs the
+system hands the app (macOS: "Open With", a drop on its Dock icon)."""
 import multiprocessing
 import os
 import sys
@@ -39,6 +40,7 @@ def main(path=None, require_offline=False):
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication, QMessageBox
 
+    from .fileopen import FileOpener
     from .style import STYLE_SHEET, app_icon
     from .window import APP_NAME, MainWindow
     from .workspace import Workspace
@@ -56,16 +58,20 @@ def main(path=None, require_offline=False):
 
     sys.excepthook = ErrorReport()
 
+    opener = FileOpener(app)
+    app.installEventFilter(opener)
     Workspace.remove_leftovers()
     workspace = Workspace()
     window = None
     try:
         window = MainWindow(workspace)
+        opener.set_window(window)
         window.show()
         if path:
             window.open_path(path)
         return app.exec()
     finally:
+        app.removeEventFilter(opener)
         if window is not None:
             window.shutdown()
         workspace.close()

@@ -109,11 +109,12 @@ def app_icon():
     """A page with lines of text, one of them blacked out."""
     icon = QIcon()
     for size in (16, 32, 64, 128, 256, 512):
-        icon.addPixmap(_icon(size))
+        icon.addPixmap(icon_pixmap(size))
     return icon
 
 
-def _icon(size):
+def icon_pixmap(size):
+    """The app icon drawn at `size` pixels (also saved as the Mac app's icon: packaging/macos/make_icon.py)."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
     p = QPainter(pixmap)
